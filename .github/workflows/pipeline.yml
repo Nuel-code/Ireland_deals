@@ -1,0 +1,91 @@
+name: Daily Deals Pipeline (Dublin)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily 09:10 UTC
+    - cron: "10 9 * * *"
+
+concurrency:
+  group: daily-deals
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run daily pipeline
+        env:
+          # Safety caps / rate limiting
+          REQUEST_TIMEOUT_SECS: "25"
+          SLEEP_BASE_SECS: "0.6"
+          SLEEP_JITTER_SECS: "0.9"
+          MAX_PROMO_URLS_PER_STORE: "25"
+          MAX_PAGES_PER_RUN: "350"
+
+          # Only used if stores files are missing
+          DUBLIN_BBOX: "53.245, -6.385, 53.427, -6.065"
+          OVERPASS_TIMEOUT: "180"
+          OVERPASS_MAX_RETRIES: "4"
+          OVERPASS_BACKOFF_BASE: "2.0"
+
+        run: |
+          python run.py
+
+      - name: Upload artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-deals-outputs
+          path: |
+            promo_urls.csv
+            promo_urls.xlsx
+            deals.csv
+            deals.xlsx
+            data/published_deals.json
+
+      - name: Commit published feed + generated CSV/XLSX
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Ensure data folder exists (should already if export ran)
+          mkdir -p data
+
+          git add promo_urls.csv promo_urls.xlsx deals.csv deals.xlsx data/published_deals.json || true
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: daily deals feed update [skip ci]" || true
+          git push
