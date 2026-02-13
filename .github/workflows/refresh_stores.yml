@@ -1,0 +1,78 @@
+name: Weekly Store Refresh (Dublin)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on Mondays 09:00 UTC (adjust if you want)
+    - cron: "0 9 * * 1"
+
+concurrency:
+  group: refresh-stores
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Discover stores via Overpass
+        env:
+          DUBLIN_BBOX: "53.245, -6.385, 53.427, -6.065"
+          OVERPASS_TIMEOUT: "180"
+          OVERPASS_MAX_RETRIES: "6"
+          OVERPASS_BACKOFF_BASE: "2.0"
+        run: |
+          python src/osm_discover.py
+
+      - name: Upload artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-stores-outputs
+          path: |
+            stores_dublin.csv
+            stores_with_websites.csv
+            dublin_stores.xlsx
+
+      - name: Commit store files to repo root
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add stores_dublin.csv stores_with_websites.csv dublin_stores.xlsx || true
+
+          # If nothing changed, don't fail.
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: weekly refresh Dublin stores [skip ci]" || true
+          git push
