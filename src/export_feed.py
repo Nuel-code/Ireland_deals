@@ -13,6 +13,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def parse_iso(s: str) -> datetime:
+    try:
+        return datetime.fromisoformat((s or "").replace("Z", "+00:00"))
+    except Exception:
+        return datetime.min
+
+
 def norm_title(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
@@ -60,26 +67,51 @@ def to_bool(v: Any) -> Optional[bool]:
     return None
 
 
+def write_csv(path: str, items: List[Dict[str, Any]]) -> None:
+    fieldnames = [
+        "id",
+        "title",
+        "store_name",
+        "category",
+        "new_price",
+        "old_price",
+        "discount_percent",
+        "in_store_confidence",
+        "needs_review",
+        "source_url",
+        "addr",
+        "lat",
+        "lon",
+        "captured_at",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for it in items:
+            row = {k: it.get(k) for k in fieldnames}
+            w.writerow(row)
+
+
 def main() -> int:
     deals_csv = "deals.csv"
     if not os.path.exists(deals_csv):
         print("[warn] deals.csv missing; skipping feed export.")
         return 0
 
-    items: List[Dict[str, Any]] = []
     with open(deals_csv, "r", encoding="utf-8") as f:
         r = csv.DictReader(f)
         rows = list(r)
 
-    # Optional publish filter: if column exists and any row has a parseable bool, apply it.
+    # Optional publish filter: if column exists and any row has publish=True, export only publish=True
     has_publish = "publish" in (rows[0].keys() if rows else [])
     publish_values = [to_bool(x.get("publish")) for x in rows] if has_publish else []
     should_filter_publish = has_publish and any(v is True for v in publish_values)
 
+    latest_by_id: Dict[str, Dict[str, Any]] = {}
+
     for row in rows:
-        if should_filter_publish:
-            if to_bool(row.get("publish")) is not True:
-                continue
+        if should_filter_publish and to_bool(row.get("publish")) is not True:
+            continue
 
         store_domain = (row.get("website_domain") or "").strip().lower()
         title = (row.get("title") or "").strip() or "(untitled)"
@@ -105,10 +137,16 @@ def main() -> int:
             "lon": to_float(row.get("lon")),
             "captured_at": (row.get("captured_at") or now_iso()).strip(),
         }
-        items.append(it)
 
-    # Stable ordering for diff-friendly commits
-    items.sort(key=lambda x: x["id"])
+        existing = latest_by_id.get(it["id"])
+        if not existing:
+            latest_by_id[it["id"]] = it
+        else:
+            if parse_iso(it.get("captured_at", "")) > parse_iso(existing.get("captured_at", "")):
+                latest_by_id[it["id"]] = it
+
+    items = list(latest_by_id.values())
+    items.sort(key=lambda x: x["id"])  # stable diffs
 
     feed = {
         "generated_at": now_iso(),
@@ -117,11 +155,16 @@ def main() -> int:
     }
 
     os.makedirs("data", exist_ok=True)
-    out_path = os.path.join("data", "published_deals.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(feed, f, ensure_ascii=False, indent=2)
 
-    print(f"[write] {out_path} items={len(items)}")
+    json_path = os.path.join("data", "published_deals.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(feed, f, ensure_ascii=False, indent=2)
+    print(f"[write] {json_path} items={len(items)}")
+
+    csv_path = os.path.join("data", "published_deals.csv")
+    write_csv(csv_path, items)
+    print(f"[write] {csv_path} rows={len(items)}")
+
     return 0
 
 
