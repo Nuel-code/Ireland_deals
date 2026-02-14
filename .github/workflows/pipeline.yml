@@ -3,7 +3,6 @@ name: Daily Deals Pipeline (Dublin)
 on:
   workflow_dispatch:
   schedule:
-    # Daily 09:10 UTC
     - cron: "10 9 * * *"
 
 concurrency:
@@ -44,19 +43,16 @@ jobs:
 
       - name: Run daily pipeline
         env:
-          # Safety caps / rate limiting
           REQUEST_TIMEOUT_SECS: "25"
           SLEEP_BASE_SECS: "0.6"
           SLEEP_JITTER_SECS: "0.9"
           MAX_PROMO_URLS_PER_STORE: "25"
           MAX_PAGES_PER_RUN: "350"
 
-          # Only used if stores files are missing
           DUBLIN_BBOX: "53.245, -6.385, 53.427, -6.065"
           OVERPASS_TIMEOUT: "180"
           OVERPASS_MAX_RETRIES: "4"
           OVERPASS_BACKOFF_BASE: "2.0"
-
         run: |
           python run.py
 
@@ -71,16 +67,22 @@ jobs:
             deals.csv
             deals.xlsx
             data/published_deals.json
+            data/published_deals.csv
 
       - name: Commit published feed + generated CSV/XLSX
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Ensure data folder exists (should already if export ran)
           mkdir -p data
 
-          git add promo_urls.csv promo_urls.xlsx deals.csv deals.xlsx data/published_deals.json || true
+          git add \
+            promo_urls.csv \
+            promo_urls.xlsx \
+            deals.csv \
+            deals.xlsx \
+            data/published_deals.json \
+            data/published_deals.csv || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
